@@ -3,9 +3,7 @@ pragma solidity ^0.8.0;
 
 import "./Interface/IERC20.sol";
 import "./Utils/ReentrancyGuard.sol";
-import "./Utils/SafeMath.sol";
 import "@chainlink/contracts/src/v0.8/automation/interfaces/AutomationCompatibleInterface.sol";
-using SafeMath for uint256;
 
 struct RewardRateSnapshot {
     uint256 timestamp;   // The timestamp when the reward rate was updated
@@ -45,6 +43,11 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
         uint256 userStakeWeek = stakingStartTime[account];
         uint256 userBalance = stakedBalance[account];
 
+        if(stakingStartTime[account] >= rewardRateHistory.length){
+            revert StakingLessThanOneWeek();
+        }
+
+
         // only get staking reward for a full week
         for (uint256 i = userStakeWeek; i < rewardRateHistory.length; i++) {
             RewardRateSnapshot memory snapshot = rewardRateHistory[i];
@@ -55,7 +58,7 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
     }
 
     function getRewardForDuration() external view returns (uint256) {
-        return currentRewardRate.mul(rewardsDuration);
+        return currentRewardRate*rewardsDuration;
     }
 
     function getTotalStaking() external view returns(uint256){
@@ -71,20 +74,25 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
     /* ========== MUTATIVE FUNCTIONS ========== */
 
     function stake(uint256 amount) external nonReentrant{
-        require(amount > 0, "Cannot stake 0");
+        if(amount<=0){
+            revert StakeZeroToken();
+        }
         require(stakeOpen, "Stake not open");
-        totalStaking = totalStaking.add(amount);
-        stakedBalance[msg.sender] = stakedBalance[msg.sender].add(amount);
+        totalStaking += amount;
+        stakedBalance[msg.sender] += amount;
+        stakingStartTime[msg.sender] = rewardRateHistory.length;
         TreeToken.transferFrom(msg.sender, address(this), amount);
         emit Staked(msg.sender, amount);
     }
 
     function withdraw(uint256 amount) public nonReentrant{
-        require(amount > 0, "Cannot withdraw 0");
+        if(amount<=0){
+            revert StakeZeroToken();
+        }
         require(stakeOpen, "Stake not open");
         rewards[msg.sender] += earned(msg.sender);
-        totalStaking = totalStaking.sub(amount);
-        stakedBalance[msg.sender] = stakedBalance[msg.sender].sub(amount);
+        totalStaking -= amount;
+        stakedBalance[msg.sender] -= amount;
         TreeToken.transfer(msg.sender, amount);
         emit Withdrawn(msg.sender, amount);
     }
@@ -92,7 +100,10 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
     function getReward() public nonReentrant{
         require(stakeOpen, "Stake not open");
         uint256 reward = rewards[msg.sender];
-        if (reward > 0) {
+        if(reward<=0){
+            revert NoRewardAvailable(reward);
+        }
+        else{
             rewards[msg.sender] = 0;
             TreeToken.transfer(msg.sender, reward);
             emit RewardPaid(msg.sender, reward);
@@ -135,18 +146,20 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
         }
         stakeOpen = false;
 
-        // calculate new reward rate
-        uint256 newRewardPaid = (totalStaking.sub(totalStakingPervious)).mul(currentRewardRate).mul(rewardsDuration);
-        availableFunds = availableFunds.sub(newRewardPaid);
-        currentRewardRate = availableFunds.div(fullYear).div(totalStaking);
+        // calculate new reward rate if staking amount changed
+        if (totalStaking!=totalStakingPervious && totalStaking !=0) {
+            uint256 newRewardPaid = (totalStaking-totalStakingPervious)*currentRewardRate*rewardsDuration;
+            availableFunds -= newRewardPaid;
+            currentRewardRate = availableFunds/fullYear/totalStaking;
+        }
 
         // update variable
         totalStakingPervious = totalStaking;
         lastRewardUpdateTime = block.timestamp;
 
         RewardRateSnapshot memory newSnapshot = RewardRateSnapshot({
-        timestamp: block.timestamp,  // Set the current block timestamp
-        rewardRate: currentRewardRate    // Set the new reward rate
+            timestamp: block.timestamp,  // Set the current block timestamp
+            rewardRate: currentRewardRate    // Set the new reward rate
         });
 
         // Push the new snapshot into the rewardRateHistory array
@@ -158,7 +171,14 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
     // external function to desposit tree token
     function depositFunds(uint256 _amount) external nonReentrant{
         // Transfer tokens to this contract
-        require(TreeToken.transferFrom(msg.sender, address(this), _amount), "Transfer failed");
+        if (_amount == 0) {
+            revert DepositFundFailed(_amount);
+        }
+
+        bool transfer_status= TreeToken.transferFrom(msg.sender, address(this), _amount);
+        if(!transfer_status){
+            revert DepositFundFailed(_amount);
+        }
         
         // Update available funds in the contract
         availableFunds += _amount;
@@ -178,4 +198,9 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
 
     // Error declarations
     error StakingRewardNotUpdate(uint256 availableFunds,uint256 totalStaking);
+    error StakingLessThanOneWeek();
+    error DepositFundFailed(uint256 amount);
+    error StakeZeroToken();
+    error NoRewardAvailable(uint256 reward);
+
 }
