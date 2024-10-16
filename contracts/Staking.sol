@@ -1,0 +1,181 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "./Interface/IERC20.sol";
+import "./Utils/ReentrancyGuard.sol";
+import "./Utils/SafeMath.sol";
+import "@chainlink/contracts/src/v0.8/automation/interfaces/AutomationCompatibleInterface.sol";
+using SafeMath for uint256;
+
+struct RewardRateSnapshot {
+    uint256 timestamp;   // The timestamp when the reward rate was updated
+    uint256 rewardRate;  // The reward rate for this snapshot
+}
+
+
+contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
+    IERC20 public TreeToken;
+
+    mapping(address => uint256) public stakedBalance; // how many tokens staking in the contract
+    mapping(address => uint256) public rewards; // how many reward token left unclaimed
+    mapping(address => uint256) public stakingStartTime; // start time for staking
+
+    // contract variable
+    uint256 public totalStakingPervious = 0; // previous total staking amount
+    uint256 public totalStaking = 0; // Total staking amount
+    uint256 public rewardsDuration = 7 days;
+    uint256 public fullYear = 365 days;
+    uint256 public availableFunds = 0; // Available Fund to distribute staking rewards
+    bool public stakeOpen = true;
+
+    // Rewards calculating constant
+    uint256 public lastRewardUpdateTime = 0;
+    uint256 public currentRewardRate = 0;
+    RewardRateSnapshot[] public rewardRateHistory;
+
+    
+    constructor(IERC20 _stakingToken) {
+        TreeToken = _stakingToken;
+        lastRewardUpdateTime = block.timestamp;
+    }
+
+    /* view function*/
+    function earned(address account) public view returns (uint256) {
+        uint256 totalReward = 0;
+        uint256 userStakeWeek = stakingStartTime[account];
+        uint256 userBalance = stakedBalance[account];
+
+        // only get staking reward for a full week
+        for (uint256 i = userStakeWeek; i < rewardRateHistory.length; i++) {
+            RewardRateSnapshot memory snapshot = rewardRateHistory[i];
+            totalReward += (userBalance * snapshot.rewardRate * rewardsDuration) / 1e18;
+        }
+
+        return totalReward;
+    }
+
+    function getRewardForDuration() external view returns (uint256) {
+        return currentRewardRate.mul(rewardsDuration);
+    }
+
+    function getTotalStaking() external view returns(uint256){
+        return totalStaking;
+    }
+
+    // Function to view staked balance
+    function balanceOf(address account) external view returns (uint256) {
+        return stakedBalance[account];
+    }
+
+
+    /* ========== MUTATIVE FUNCTIONS ========== */
+
+    function stake(uint256 amount) external nonReentrant{
+        require(amount > 0, "Cannot stake 0");
+        require(stakeOpen, "Stake not open");
+        totalStaking = totalStaking.add(amount);
+        stakedBalance[msg.sender] = stakedBalance[msg.sender].add(amount);
+        TreeToken.transferFrom(msg.sender, address(this), amount);
+        emit Staked(msg.sender, amount);
+    }
+
+    function withdraw(uint256 amount) public nonReentrant{
+        require(amount > 0, "Cannot withdraw 0");
+        require(stakeOpen, "Stake not open");
+        rewards[msg.sender] += earned(msg.sender);
+        totalStaking = totalStaking.sub(amount);
+        stakedBalance[msg.sender] = stakedBalance[msg.sender].sub(amount);
+        TreeToken.transfer(msg.sender, amount);
+        emit Withdrawn(msg.sender, amount);
+    }
+
+    function getReward() public nonReentrant{
+        require(stakeOpen, "Stake not open");
+        uint256 reward = rewards[msg.sender];
+        if (reward > 0) {
+            rewards[msg.sender] = 0;
+            TreeToken.transfer(msg.sender, reward);
+            emit RewardPaid(msg.sender, reward);
+        }
+    }
+
+    function exit() public  nonReentrant{
+        require(stakeOpen, "Stake not open");
+        withdraw(stakedBalance[msg.sender]);
+        getReward();
+    } 
+
+
+    /* ========== chainlink keeper ========== */
+
+    /**
+     * @dev This is the function that the Chainlink Keeper nodes call
+     * they look for `upkeepNeeded` to return True.
+     * the following should be true for this to return true:
+     */
+    function checkUpkeep(bytes memory /* checkData */ )
+        public
+        view
+        override
+        returns (bool upkeepNeeded, bytes memory /* performData */ )
+    {
+        bool timePassed = ((block.timestamp - lastRewardUpdateTime) > rewardsDuration); // seconds
+        upkeepNeeded = (timePassed && stakeOpen && availableFunds>0 && totalStaking>0);
+        return (upkeepNeeded, "0x0");
+    }
+    
+    /**
+     * @dev Once `checkUpkeep` is returning `true`, this function is called
+     * and it kicks off reward update
+     */
+    function performUpkeep(bytes calldata /* performData */ ) external override {
+        (bool upkeepNeeded,) = checkUpkeep("");
+        if (!upkeepNeeded) {
+            revert StakingRewardNotUpdate(availableFunds,totalStaking);
+        }
+        stakeOpen = false;
+
+        // calculate new reward rate
+        uint256 newRewardPaid = (totalStaking.sub(totalStakingPervious)).mul(currentRewardRate).mul(rewardsDuration);
+        availableFunds = availableFunds.sub(newRewardPaid);
+        currentRewardRate = availableFunds.div(fullYear).div(totalStaking);
+
+        // update variable
+        totalStakingPervious = totalStaking;
+        lastRewardUpdateTime = block.timestamp;
+
+        RewardRateSnapshot memory newSnapshot = RewardRateSnapshot({
+        timestamp: block.timestamp,  // Set the current block timestamp
+        rewardRate: currentRewardRate    // Set the new reward rate
+        });
+
+        // Push the new snapshot into the rewardRateHistory array
+        rewardRateHistory.push(newSnapshot);
+
+        stakeOpen = true;
+        emit StakePeriodFinish(currentRewardRate);
+    }
+    // external function to desposit tree token
+    function depositFunds(uint256 _amount) external nonReentrant{
+        // Transfer tokens to this contract
+        require(TreeToken.transferFrom(msg.sender, address(this), _amount), "Transfer failed");
+        
+        // Update available funds in the contract
+        availableFunds += _amount;
+
+        // Emit an event to log the deposit (optional)
+        emit FundsDeposited(msg.sender, _amount);
+    }
+
+
+
+    // Event declarations
+    event Staked(address indexed user, uint256 amount);
+    event Withdrawn(address indexed user, uint256 amount);
+    event RewardPaid(address indexed user, uint256 amount);
+    event StakePeriodFinish(uint256 rewardRate);
+    event FundsDeposited(address indexed from, uint256 amount);
+
+    // Error declarations
+    error StakingRewardNotUpdate(uint256 availableFunds,uint256 totalStaking);
+}
