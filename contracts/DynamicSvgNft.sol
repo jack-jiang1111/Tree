@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.8;
 
+import "./Interface/IERC20.sol";
+import "./Interface/IStaking.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
@@ -12,6 +14,7 @@ import "hardhat/console.sol";
 error ERC721Metadata__URI_QueryFor_NonExistentToken();
 
 contract TreeSvgNft is ERC721, Ownable {
+    
     // Define the Status of the tree
     enum Status { Seed, Flower, Tree }
     
@@ -28,33 +31,29 @@ contract TreeSvgNft is ERC721, Ownable {
     }
     uint256 private s_tokenCounter;
     // Need image url for (n,r,sr,ssr)*(seed,flower,tree)
-    string private N_ImageURI;
-    string private s_highImageURI;
-
-    address public treeToken; // erc20 Address
-    address public stakingPool; // these are two address that built in constrcutor, will trasfer the erc20 token in this contract once it reaches a certain level
-    address public EcotourPool; 
+    // image url order: (n,r,sr,ssr) for seed, then for flower, then for tree
+    string[12] private ImageURL;
+    uint256 public constant THRESHOLD = 1_000_000 * 10**18; // 1 million tokens (assuming 18 decimals)
+    IERC20 public treeToken; // erc20 Address
+    IStaking public StakingPool; // these are two address that built in constrcutor, will trasfer the erc20 token in this contract once it reaches a certain level
     uint256 public mintPrice; // how many erc20 it takes to mint one nft
     uint256 public fertilizerPrice; // how many tree token it takes to ferilize
     uint256 public waterPeriod = 7 days;
 
-    mapping(uint256 => Tree) public treeAttributes;
+    mapping(uint256 => Tree) private treeAttributes;
+    mapping(uint256 => uint256) private requestIdToTokenId;
 
     event CreatedNFT(uint256 indexed tokenId, int256 highValue);
 
-    constructor(
-        address priceFeedAddress,
-        string memory lowSvg,
-        string memory highSvg
-    ) ERC721("Tree NFT", "DSN") {
+    constructor(address priceFeedAddress) ERC721("Tree NFT", "DSN") {
         s_tokenCounter = 0;
         i_priceFeed = AggregatorV3Interface(priceFeedAddress);
-        // setLowSVG(lowSvg);
-        // setHighSVG(highSvg);
-        s_lowImageURI = svgToImageURI(lowSvg);
-        s_highImageURI = svgToImageURI(highSvg);
     }
 
+    // set image url, only owner can set
+    function SetImageUrl(string memory SvgImg, uint256 index) public onlyOwner{
+        ImageURL[index] = svgToImageURI(SvgImg);
+    }
 
     function mintNft(int256 highValue) public {
         // User must spend Tree token to fertilize
@@ -65,14 +64,16 @@ contract TreeSvgNft is ERC721, Ownable {
         // Initialize the tree's attributes
         treeAttributes[tokenId] = Tree({
             status: Status.Seed,
-            rareLevel: getRareLevel(RareLevel.Normal,Status.Seed);
+            rareLevel: RareLevel.Normal;
             growLevel: 1, // Start from level 1
             lastWatered: block.timestamp,
             mintTime: block.timestamp
-            img_url://
+            img_url: "" // placeholder
         });
+        treeAttributes[tokenId].img_url = ImageURL[tree[status]*4+tree[rarelevel]]; // initiliaze image url
 
         nextTokenId++;
+        checkBalance();
         emit CreatedNFT(newTokenId, highValue);
     }
 
@@ -111,23 +112,71 @@ contract TreeSvgNft is ERC721, Ownable {
             tree.growLevel = 1;  // Reset growLevel for Tree
         }
 
-        // Improve rarity after evolving
-        improveRarity(tree);
-    }
-
-    // Function to randomly improve the rarity
-    function improveRarity(Tree storage tree) internal {
-        // Randomly improve rarity using pseudo-random logic (for demonstration purposes), will use chainlink vrf further
-        uint256 rand = uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender))) % 100;
-        RareLevel newLevel = getRareLevel(tree.rareLevel,tree.status);
-        tree.rareLevel = newLevel;
-        // TODO: change url based on rarity
+        // Improve rarity after evolving if not SSR level
+        if(tree.rarelevel!=rareLevel.SuperSuperRare){
+            updateRareLevel(tokenId);
+        }
+        treeAttributes[tokenId].img_url = ImageURL[tree[status]*4+tree[rarelevel]]; // update image url
     }
 
     // use chainlink vrf to get rarelevel
-    function getRareLevel(RareLevel level,Status current status) internal returns(RareLevel){
-
+    function updateRareLevel(uint256 tokenId) internal returns(RareLevel){
+        uint256 requestId = i_vrfCoordinator.requestRandomWords(
+            i_gasLane, i_subscriptionId, REQUEST_CONFIRMATIONS, i_callbackGasLimit, NUM_WORDS
+        );
+        requestIdToTokenId[requestId] = tokenId;
     }
+
+     /**
+     * @dev This is the function that Chainlink VRF node
+     * calls to send the money to the random winner.
+     */
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        uint256 tokenId = requestIdToTokenId[requestId];  // Get the corresponding tokenId
+        Tree storage tree = treeAttributes[tokenId];      // Access the NFT's attributes
+
+        uint256 randomValue = randomWords[0] % 100; // Get a random value between 0-99
+
+        RareLevel newRareLevel;
+        // Determine the rarity based on the probabilities
+        if(tree.status = Status.Normal){
+            // N 80%; R 14%; SR 5%; SSR 1% 
+            if (randomValue < 1 ) {
+                newRareLevel = RareLevel.SuperSuperRare;  // 1% chance
+            } else if (randomValue < 6) {
+                newRareLevel = RareLevel.SuperRare;       // 5% chance
+            } else if (randomValue < 20) {
+                newRareLevel = RareLevel.Rare;            // 14% chance
+            } else {
+                newRareLevel = RareLevel.Normal;          // 80% chance
+            }
+        }
+        else if(tree.status = Status.Rare){
+            // R 85%; SR 14%; SSR 1% 
+            if (randomValue < 1 ) {
+                newRareLevel = RareLevel.SuperSuperRare;  // 1% chance
+            } else if (randomValue < 15) {
+                newRareLevel = RareLevel.SuperRare;       // 14% chance
+            } else {
+                newRareLevel = RareLevel.Rare;            // 85% chance
+            }
+        }
+        else if(tree.status = Status.SuperRare){
+            // SR 80%; SSR 20% 
+            if (randomValue < 20 ) {
+                newRareLevel = RareLevel.SuperSuperRare;  // 20% chance
+            } else {
+                newRareLevel = RareLevel.SuperRare;       // 80% chance
+            }
+        }
+
+        // Update the tree's rare level with the newly determined rarity
+        tree.rareLevel = newRareLevel;
+
+        // Optionally: remove the mapping now that we've used the requestId
+        delete requestIdToTokenId[requestId];
+    }
+
     // Function to fertilize the tree by spending ERC20 tokens
     function fertilizeTree(uint256 tokenId) public {
         require(_exists(tokenId), "TreeNFT: Token does not exist");
@@ -145,6 +194,28 @@ contract TreeSvgNft is ERC721, Ownable {
             evolveTree(tokenId);
         }
     }
+
+    // trasfer ERC20 token to other contracts when reaching a threadhold
+    function checkBalance() internal{
+        
+        // Get the token balance of this contract
+        uint256 contractBalance = token.balanceOf(address(this));
+
+        // If balance is greater than 1 million tokens
+        if (contractBalance > THRESHOLD) {
+            // Calculate half of the balance
+            uint256 halfBalance = contractBalance / 2;
+
+            // 1. Send half of the tokens to the staking contract
+            StakingPool.depositFunds(halfBalance);
+
+            // 2. Approve the ERC20 contract to spend the other half of the tokens
+            bool success = treeToken.approve(address(treeToken), halfBalance);
+            require(success, "Token approval failed");
+        }
+    }
+
+    // view and utils functions
 
     // You could also just upload the raw SVG and let solildity convert it!
     function svgToImageURI(string memory svg) public pure returns (string memory) {
@@ -222,9 +293,7 @@ contract TreeSvgNft is ERC721, Ownable {
     }
     // TODO:
     /*
-        1. chainlink vrf to randomize
-        2. image url initialize
-        3. mint
-        // TODO: change url based on rarity
+        event
+        error log
     */
 }
