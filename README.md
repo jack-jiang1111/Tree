@@ -11,6 +11,7 @@ Welcome to the Eco-Tourism Blockchain Project! This project uses blockchain tech
 - [NFT Growth System](#nft-growth-system)
 - [Staking](#staking)
 - [Getting Started](#getting-started)
+- [Deploy](#deployment-to-a-testnet-or-mainnet)
 - [License](#license)
 
 ## Overview
