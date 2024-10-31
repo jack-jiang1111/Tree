@@ -34,7 +34,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     uint256 public constant THRESHOLD = 1_000_000 * 10**18; // 1 million tokens (assuming 18 decimals)
     IERC20 public treeToken; // erc20 Address
     IStaking public StakingPool; // these are two address that built in constrcutor, will trasfer the erc20 token in this contract once it reaches a certain level
-    uint256 public mintPrice; // how many erc20 it takes to mint one nft
+    uint256 public mintPrice; // how many tree token it takes to mint one nft
     uint256 public fertilizerPrice; // how many tree token it takes to ferilize
     uint256 public waterPeriod = 7 days;
 
@@ -72,6 +72,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     // set image url, only owner can set
     function SetImageUrl(string memory SvgImg, uint256 index) public onlyOwner{
         ImageURL[index] = svgToImageURI(SvgImg);
+        emit ImageURLChanged(index,ImageURL[index]);
     }
 
     function mintNft() public {
@@ -109,6 +110,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
         // Water the tree
         tree.lastWatered = block.timestamp;
 
+        emit Treewatered(tokenId);
         // Grow the tree if it can grow further
         if (tree.growLevel < getMaxGrowLevel(tree.status)) {
             tree.growLevel++;
@@ -132,11 +134,14 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
             tree.growLevel = 1;  // Reset growLevel for Tree
         }
 
+        
         // Improve rarity after evolving if not SSR level
         if(tree.rareLevel!=RareLevel.SuperSuperRare){
             updateRareLevel(tokenId);
         }
         treeAttributes[tokenId].img_url = ImageURL[uint256(tree.status)*4+uint256(tree.rareLevel)]; // update image url
+
+        emit TreeEvolved(tokenId,tree.rareLevel);
     }
 
     // use chainlink vrf to get rarelevel
@@ -149,7 +154,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
 
      /**
      * @dev This is the function that Chainlink VRF node
-     * calls to send the money to the random winner.
+     * calls to randomize evlove the tree
      */
     function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
         uint256 tokenId = requestIdToTokenId[requestId];  // Get the corresponding tokenId
@@ -213,11 +218,12 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
             // If growLevel hits max, evolve to the next status
             evolveTree(tokenId);
         }
+
+        emit TreeFertilized(tokenId);
     }
 
     // trasfer ERC20 token to other contracts when reaching a threadhold
     function checkBalance() internal{
-        
         // Get the token balance of this contract
         uint256 contractBalance = treeToken.BalanceOf(address(this));
 
@@ -333,6 +339,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
         waterPeriod = newWaterPeriod;
         emit waterPeriodChanged(newWaterPeriod);
     }
+
     // TODO:
     /*
         event
@@ -343,6 +350,10 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     event MintPirceChanged(uint256 newMintPrice);
     event FertilizerPriceChanged(uint256 newFertilizerPrice);
     event waterPeriodChanged(uint256 newWaterPeriod);
+    event Treewatered(uint256 tokenId);
+    event TreeEvolved(uint256 tokenId,RareLevel rareLevel);
+    event TreeFertilized(uint256 tokenId);
+
 
     error ERC721Metadata__URI_QueryFor_NonExistentToken();
 
