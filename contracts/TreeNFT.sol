@@ -219,7 +219,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     function checkBalance() internal{
         
         // Get the token balance of this contract
-        uint256 contractBalance = treeToken.GetBalanceOf(address(this));
+        uint256 contractBalance = treeToken.BalanceOf(address(this));
 
         // If balance is greater than 1 million tokens
         if (contractBalance > THRESHOLD) {
@@ -313,10 +313,6 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     }
 
     // DAO related changing status
-    // string[12] private ImageURL;
-    // uint256 public mintPrice; // how many erc20 it takes to mint one nft
-    // uint256 public fertilizerPrice; // how many tree token it takes to ferilize
-    // uint256 public waterPeriod = 7 days;
 
     function changeImageURL(string memory newImageURL, uint256 index) public onlyOwner{
         ImageURL[index] = newImageURL;
