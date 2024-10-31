@@ -5,15 +5,13 @@ import "./Interface/IERC20.sol";
 import "./Interface/IStaking.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-// The new-version of "@openzeppelin/contracts": "^5.0.1", already has Base64.sol
-// You can import it like as shown just below...
-import "@openzeppelin/contracts/utils/Base64.sol";   // 👈 comment in this import
+import "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import "@chainlink/contracts/src/v0.8/vrf/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import "@openzeppelin/contracts/utils/Base64.sol";
 import "hardhat/console.sol";
 
-error ERC721Metadata__URI_QueryFor_NonExistentToken();
-
-contract TreeSvgNft is ERC721, Ownable {
+contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     
     // Define the Status of the tree
     enum Status { Seed, Flower, Tree }
@@ -43,11 +41,32 @@ contract TreeSvgNft is ERC721, Ownable {
     mapping(uint256 => Tree) private treeAttributes;
     mapping(uint256 => uint256) private requestIdToTokenId;
 
-    event CreatedNFT(uint256 indexed tokenId, int256 highValue);
+    // chainlink variable
+    VRFCoordinatorV2Interface private immutable i_vrfCoordinator;
+    AggregatorV3Interface private immutable i_priceFeed;
+    uint64 private immutable i_subscriptionId;
+    bytes32 private immutable i_gasLane;
+    uint32 private immutable i_callbackGasLimit;
+    uint16 private constant REQUEST_CONFIRMATIONS = 3;
+    uint32 private constant NUM_WORDS = 1;
 
-    constructor(address priceFeedAddress) ERC721("Tree NFT", "DSN") {
+
+    constructor(
+        address priceFeedAddress,
+        address vrfCoordinatorV2,
+        uint64 subscriptionId,
+        bytes32 gasLane, // keyHash
+        uint256 interval,
+        address priceFeed,
+        uint32 callbackGasLimit) 
+    ERC721("Tree NFT", "DSN") 
+    VRFConsumerBaseV2(vrfCoordinatorV2){
         s_tokenCounter = 0;
-        i_priceFeed = AggregatorV3Interface(priceFeedAddress);
+        i_vrfCoordinator = VRFCoordinatorV2Interface(vrfCoordinatorV2);
+        i_gasLane = gasLane;
+        i_subscriptionId = subscriptionId;
+        i_priceFeed = AggregatorV3Interface(priceFeed);
+        i_callbackGasLimit = callbackGasLimit;
     }
 
     // set image url, only owner can set
@@ -55,26 +74,27 @@ contract TreeSvgNft is ERC721, Ownable {
         ImageURL[index] = svgToImageURI(SvgImg);
     }
 
-    function mintNft(int256 highValue) public {
+    function mintNft() public {
         // User must spend Tree token to fertilize
         require(treeToken.transferFrom(msg.sender, address(this), mintPrice * 10**18), "TreeNFT: Transfer failed");
-        uint256 tokenId = nextTokenId;
+        uint256 tokenId = s_tokenCounter+1;
         _safeMint(msg.sender, tokenId);
 
         // Initialize the tree's attributes
         treeAttributes[tokenId] = Tree({
             status: Status.Seed,
-            rareLevel: RareLevel.Normal;
+            rareLevel: RareLevel.Normal,
             growLevel: 1, // Start from level 1
             lastWatered: block.timestamp,
-            mintTime: block.timestamp
+            mintTime: block.timestamp,
             img_url: "" // placeholder
         });
-        treeAttributes[tokenId].img_url = ImageURL[tree[status]*4+tree[rarelevel]]; // initiliaze image url
+        Tree storage tree= treeAttributes[tokenId];
+        tree.img_url = ImageURL[uint256(tree.status)*4 + uint256(tree.rareLevel)]; // initiliaze image url
 
-        nextTokenId++;
+        s_tokenCounter++;
         checkBalance();
-        emit CreatedNFT(newTokenId, highValue);
+        emit CreatedNFT(s_tokenCounter, tree.img_url);
     }
 
     // Function to water the tree daily
@@ -84,7 +104,7 @@ contract TreeSvgNft is ERC721, Ownable {
 
         // Check if the tree was watered in the past 24 hours
         require(block.timestamp >= tree.lastWatered + 1 days, "TreeNFT: Tree already watered today");
-        require(tree.status!= Status.Tree, "No need water anymore")
+        require(tree.status!= Status.Tree, "No need water anymore");
 
         // Water the tree
         tree.lastWatered = block.timestamp;
@@ -113,10 +133,10 @@ contract TreeSvgNft is ERC721, Ownable {
         }
 
         // Improve rarity after evolving if not SSR level
-        if(tree.rarelevel!=rareLevel.SuperSuperRare){
+        if(tree.rareLevel!=RareLevel.SuperSuperRare){
             updateRareLevel(tokenId);
         }
-        treeAttributes[tokenId].img_url = ImageURL[tree[status]*4+tree[rarelevel]]; // update image url
+        treeAttributes[tokenId].img_url = ImageURL[uint256(tree.status)*4+uint256(tree.rareLevel)]; // update image url
     }
 
     // use chainlink vrf to get rarelevel
@@ -139,7 +159,7 @@ contract TreeSvgNft is ERC721, Ownable {
 
         RareLevel newRareLevel;
         // Determine the rarity based on the probabilities
-        if(tree.status = Status.Normal){
+        if(tree.rareLevel == RareLevel.Normal){
             // N 80%; R 14%; SR 5%; SSR 1% 
             if (randomValue < 1 ) {
                 newRareLevel = RareLevel.SuperSuperRare;  // 1% chance
@@ -151,7 +171,7 @@ contract TreeSvgNft is ERC721, Ownable {
                 newRareLevel = RareLevel.Normal;          // 80% chance
             }
         }
-        else if(tree.status = Status.Rare){
+        else if(tree.rareLevel == RareLevel.Rare){
             // R 85%; SR 14%; SSR 1% 
             if (randomValue < 1 ) {
                 newRareLevel = RareLevel.SuperSuperRare;  // 1% chance
@@ -161,7 +181,7 @@ contract TreeSvgNft is ERC721, Ownable {
                 newRareLevel = RareLevel.Rare;            // 85% chance
             }
         }
-        else if(tree.status = Status.SuperRare){
+        else if(tree.rareLevel == RareLevel.SuperRare){
             // SR 80%; SSR 20% 
             if (randomValue < 20 ) {
                 newRareLevel = RareLevel.SuperSuperRare;  // 20% chance
@@ -199,7 +219,7 @@ contract TreeSvgNft is ERC721, Ownable {
     function checkBalance() internal{
         
         // Get the token balance of this contract
-        uint256 contractBalance = token.balanceOf(address(this));
+        uint256 contractBalance = treeToken.GetBalanceOf(address(this));
 
         // If balance is greater than 1 million tokens
         if (contractBalance > THRESHOLD) {
@@ -274,26 +294,60 @@ contract TreeSvgNft is ERC721, Ownable {
     // Function to view the tree's attributes
     function getTreeAttributes(uint256 tokenId) public view returns (
         Status, 
-        bool, 
-        RareLevel, 
+        RareLevel,
         uint8, 
         uint256, 
-        uint256
+        uint256,
+        string memory 
     ) {
         require(_exists(tokenId), "TreeNFT: Token does not exist");
         Tree memory tree = treeAttributes[tokenId];
         return (
             tree.status,
-            tree.watered,
             tree.rareLevel,
             tree.growLevel,
             tree.lastWatered,
-            tree.mintTime
+            tree.mintTime,
+            tree.img_url
         );
+    }
+
+    // DAO related changing status
+    // string[12] private ImageURL;
+    // uint256 public mintPrice; // how many erc20 it takes to mint one nft
+    // uint256 public fertilizerPrice; // how many tree token it takes to ferilize
+    // uint256 public waterPeriod = 7 days;
+
+    function changeImageURL(string memory newImageURL, uint256 index) public onlyOwner{
+        ImageURL[index] = newImageURL;
+        emit ImageURLChanged(index,newImageURL);
+    }
+
+    function changeMintPrice(uint256 newMintPrice) public onlyOwner{
+        mintPrice = newMintPrice;
+        emit MintPirceChanged(newMintPrice);
+    }
+
+    function changeFertilizerPrice(uint256 newFertilizerPrice) public onlyOwner{
+        fertilizerPrice = newFertilizerPrice;
+        emit FertilizerPriceChanged(newFertilizerPrice);
+    }
+
+    function changewaterPeroid(uint256 newWaterPeriod) public onlyOwner{
+        waterPeriod = newWaterPeriod;
+        emit waterPeriodChanged(newWaterPeriod);
     }
     // TODO:
     /*
         event
         error log
     */
+    event CreatedNFT(uint256 indexed tokenId, string img_url);
+    event ImageURLChanged(uint256 index,string url);
+    event MintPirceChanged(uint256 newMintPrice);
+    event FertilizerPriceChanged(uint256 newFertilizerPrice);
+    event waterPeriodChanged(uint256 newWaterPeriod);
+
+    error ERC721Metadata__URI_QueryFor_NonExistentToken();
+
 }
