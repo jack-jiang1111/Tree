@@ -10,7 +10,11 @@ struct RewardRateSnapshot {
     uint256 rewardRate;  // The reward rate for this snapshot
 }
 
-
+/**
+ * @title Staking Tree contract
+ * @author Jack
+ * @notice This contract is for staking tree token for earning rewards
+ */
 contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
     IERC20 public TreeToken;
 
@@ -38,6 +42,8 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
     }
 
     /* view function*/
+    // For saving the gas fee, the contract save a copy of APR array
+    // The earned function will return how much the user has earned so far based on history staking data
     function earned(address account) public view returns (uint256) {
         uint256 totalReward = 0;
         uint256 userStakeWeek = stakingStartTime[account];
@@ -73,6 +79,8 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
 
     /* ========== MUTATIVE FUNCTIONS ========== */
 
+    // Main staking function, user will stake ERC tree token into the contract 
+    // Then earn reward automatically weekly
     function stake(uint256 amount) external nonReentrant{
         if(amount<=0){
             revert StakeZeroToken();
@@ -85,6 +93,7 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
         emit Staked(msg.sender, amount);
     }
 
+    // Withdraw function, user will withdraw all the ERC20 token staking in the contract
     function withdraw(uint256 amount) public nonReentrant{
         if(amount<=0){
             revert StakeZeroToken();
@@ -97,6 +106,7 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
         emit Withdrawn(msg.sender, amount);
     }
 
+    // Get reward will withdraw the reward in this period
     function getReward() public nonReentrant{
         require(stakeOpen, "Stake not open");
         uint256 reward = rewards[msg.sender];
@@ -110,6 +120,7 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
         }
     }
 
+    // Exit function will withdraw the funds and rewards
     function exit() public  nonReentrant{
         require(stakeOpen, "Stake not open");
         withdraw(stakedBalance[msg.sender]);
@@ -147,6 +158,7 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
         stakeOpen = false;
 
         // calculate new reward rate if staking amount changed
+        // The new APR was calcualted for lasting one year staking reward
         if (totalStaking!=totalStakingPervious && totalStaking !=0) {
             uint256 newRewardPaid = (totalStaking-totalStakingPervious)*currentRewardRate*rewardsDuration;
             availableFunds -= newRewardPaid;
@@ -168,7 +180,9 @@ contract StakingTree is ReentrancyGuard, AutomationCompatibleInterface{
         stakeOpen = true;
         emit StakePeriodFinish(currentRewardRate);
     }
+
     // external function to desposit tree token
+    // The NFT contract will fund this contract automatically
     function depositFunds(uint256 _amount) external nonReentrant{
         // Transfer tokens to this contract
         if (_amount == 0) {

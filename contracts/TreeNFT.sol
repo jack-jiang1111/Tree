@@ -11,12 +11,19 @@ import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 import "@openzeppelin/contracts/utils/Base64.sol";
 import "hardhat/console.sol";
 
-contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
+/**
+ * @title NFT tree contract
+ * @author Jack
+ * @notice This contract builds a gamefi feature for users to interact with eco tour reward
+ */
+contract TreeNFT is ERC721, Ownable, VRFConsumerBaseV2 {
     
     // Define the Status of the tree
+    // Each NFT will have three Status. When a user mint a NFT, the status will set to Seed. Then the NFT will evlove into a higher level by watering daily.
     enum Status { Seed, Flower, Tree }
     
     // Define Rare Levels
+    // Each NFT will have 4 level of rare level. The rare level will be improved during growing stage.
     enum RareLevel { Normal, Rare, SuperRare, SuperSuperRare }
 
     struct Tree {
@@ -28,12 +35,13 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
         string img_url;
     }
     uint256 private s_tokenCounter;
+
     // Need image url for (n,r,sr,ssr)*(seed,flower,tree)
     // image url order: (n,r,sr,ssr) for seed, then for flower, then for tree
     string[12] private ImageURL;
     uint256 public constant THRESHOLD = 1_000_000 * 10**18; // 1 million tokens (assuming 18 decimals)
     IERC20 public treeToken; // erc20 Address
-    IStaking public StakingPool; // these are two address that built in constrcutor, will trasfer the erc20 token in this contract once it reaches a certain level
+    IStaking public StakingPool; // Staking pool address, the contract will trasfer the erc20 token in this contract once it reaches a certain level
     uint256 public mintPrice; // how many tree token it takes to mint one nft
     uint256 public fertilizerPrice; // how many tree token it takes to ferilize
     uint256 public waterPeriod = 7 days;
@@ -52,13 +60,15 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
 
 
     constructor(
-        address priceFeedAddress,
         address vrfCoordinatorV2,
         uint64 subscriptionId,
         bytes32 gasLane, // keyHash
-        uint256 interval,
         address priceFeed,
-        uint32 callbackGasLimit) 
+        uint32 callbackGasLimit,
+        uint256 mintPrice_,
+        address treeTokenAddress,
+        address stakingPoolAddress,
+        uint256 fertilizerPrice_) 
     ERC721("Tree NFT", "DSN") 
     VRFConsumerBaseV2(vrfCoordinatorV2){
         s_tokenCounter = 0;
@@ -67,6 +77,10 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
         i_subscriptionId = subscriptionId;
         i_priceFeed = AggregatorV3Interface(priceFeed);
         i_callbackGasLimit = callbackGasLimit;
+        mintPrice = mintPrice_;
+        treeToken = IERC20(treeTokenAddress);
+        StakingPool = IStaking(stakingPoolAddress);
+        fertilizerPrice = fertilizerPrice_;
     }
 
     // set image url, only owner can set
@@ -75,6 +89,9 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
         emit ImageURLChanged(index,ImageURL[index]);
     }
 
+    // main function to mint NFT
+    // user needs to spend ERC20 token to mint a NFT,
+    // The tree NFT will have some random status
     function mintNft() public {
         // User must spend Tree token to fertilize
         require(treeToken.transferFrom(msg.sender, address(this), mintPrice * 10**18), "TreeNFT: Transfer failed");
@@ -120,7 +137,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
         }
     }
 
-    // Function to evolve the tree when growLevel is maxed out
+    // Function to evolve the tree when growLevel reaches the max level
     function evolveTree(uint256 tokenId) internal {
         Tree storage tree = treeAttributes[tokenId];
         require(tree.status!=Status.Tree,"can't evolve fully growed tree");
@@ -134,7 +151,6 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
             tree.growLevel = 1;  // Reset growLevel for Tree
         }
 
-        
         // Improve rarity after evolving if not SSR level
         if(tree.rareLevel!=RareLevel.SuperSuperRare){
             updateRareLevel(tokenId);
@@ -145,7 +161,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     }
 
     // use chainlink vrf to get rarelevel
-    function updateRareLevel(uint256 tokenId) internal returns(RareLevel){
+    function updateRareLevel(uint256 tokenId) internal{
         uint256 requestId = i_vrfCoordinator.requestRandomWords(
             i_gasLane, i_subscriptionId, REQUEST_CONFIRMATIONS, i_callbackGasLimit, NUM_WORDS
         );
@@ -164,6 +180,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
 
         RareLevel newRareLevel;
         // Determine the rarity based on the probabilities
+        // Whenever a tree evolve, it's rarelevel will only improve upwards
         if(tree.rareLevel == RareLevel.Normal){
             // N 80%; R 14%; SR 5%; SSR 1% 
             if (randomValue < 1 ) {
@@ -270,7 +287,7 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
                         bytes(
                             abi.encodePacked(
                                 '{"name":"',
-                                name(), // You can add whatever name here
+                                name(),
                                 '", "description":"An NFT that changes based on the Chainlink Feed", ',
                                 '"attributes": [{"trait_type": "coolness", "value": 100}], "image":"',
                                 imageURI,
@@ -319,7 +336,8 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
     }
 
     // DAO related changing status
-
+    // ERC20 tree token holder will have the ability to do community vote
+    // Four variables can be changed by propose a vote: Image URL, Mint Price, Fertilizer Price, Water Peroid
     function changeImageURL(string memory newImageURL, uint256 index) public onlyOwner{
         ImageURL[index] = newImageURL;
         emit ImageURLChanged(index,newImageURL);
@@ -342,7 +360,6 @@ contract TreeSvgNft is ERC721, Ownable, VRFConsumerBaseV2 {
 
     // TODO:
     /*
-        event
         error log
     */
     event CreatedNFT(uint256 indexed tokenId, string img_url);
