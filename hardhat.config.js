@@ -1,5 +1,6 @@
 require("@nomiclabs/hardhat-waffle")
 require("@nomiclabs/hardhat-etherscan")
+require("@nomiclabs/hardhat-ethers")
 require("hardhat-deploy")
 require("solidity-coverage")
 require("hardhat-gas-reporter")
@@ -33,10 +34,12 @@ module.exports = {
     networks: {
         hardhat: {
             chainId: 31337,
-            blockGasLimit: 60000000 // Network block gasLimit
+            blockGasLimit: 60000000000, // Network block gasLimit
+            allowUnlimitedContractSize: true,
         },
         localhost: {
             chainId: 31337,
+            allowUnlimitedContractSize: true,
         },
         sepolia: {
             url: SEPOLIA_RPC_URL,
